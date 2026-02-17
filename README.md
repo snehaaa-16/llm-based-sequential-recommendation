@@ -5,8 +5,8 @@ Traditional LLM-based recommenders rely on autoregressive decoding with beam sea
 
 This project implements a hierarchical LLM architecture that:
 
-Compresses verbose item metadata into dense embeddings
-Models user interaction sequences efficiently
-Eliminates beam search decoding via a projection-based ranking head
+- Compresses verbose item metadata into dense embeddings
+- Models user interaction sequences efficiently
+- Eliminates autoregressive beam search decoding via a projection-based ranking head
 
-The goal is to achieve improved inference efficiency while maintaining strong recommendation performance.
+The goal is to improve inference efficiency while maintaining strong recommendation performance.
