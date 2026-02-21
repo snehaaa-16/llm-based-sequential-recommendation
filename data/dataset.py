@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 class SequentialDataset(Dataset):
     def __init__(self, user_sequences, max_seq_len=20):
         self.samples = []
+        self.max_seq_len = max_seq_len
 
         for user, items in user_sequences.items():
             if len(items) < 3:
@@ -21,4 +22,7 @@ class SequentialDataset(Dataset):
     def __getitem__(self, idx):
         sequence, target = self.samples[idx]
 
-        return torch.tensor(sequence), torch.tensor(target)
+        # pad sequence
+        padded = sequence + [0] * (self.max_seq_len - len(sequence))
+
+        return torch.tensor(padded), torch.tensor(target)

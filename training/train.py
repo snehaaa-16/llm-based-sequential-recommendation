@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 
 from data.preprocess import load_ml1m, create_user_sequences
 from data.dataset import SequentialDataset
+from data.item_embedding_builder import build_item_embeddings
 from models.hierarchical_model import HierarchicalLLMRec
 
 
@@ -13,23 +14,20 @@ def train():
     user_sequences = create_user_sequences(ratings)
 
     dataset = SequentialDataset(user_sequences)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
 
-    num_items = ratings["movie_id"].nunique() + 1
+    item_embeddings = build_item_embeddings()
 
-    model = HierarchicalLLMRec(num_items)
+    model = HierarchicalLLMRec(item_embeddings)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.CrossEntropyLoss()
 
     model.train()
 
-    for epoch in range(3):
+    for epoch in range(2):
         total_loss = 0
 
         for sequences, targets in dataloader:
-
-            # Fake embedding for now
-            sequences = sequences.float().unsqueeze(-1).repeat(1, 1, 512)
 
             logits = model(sequences)
             loss = criterion(logits, targets)
