@@ -32,6 +32,7 @@ This repository includes two architecture variants:
 - Augments user sequence representation with retrieved contextual signals
 - Enhances robustness by incorporating retrieved item-level knowledge
 - Designed to improve contextual awareness beyond pure sequence modeling
+
 ---
 
 ## Dataset
@@ -51,6 +52,22 @@ This repository includes two architecture variants:
 - NDCG@10
 - NDCG@20
 
+---
+
+## Repository Structure
+
+```text
+llm-based-sequential-recommendation/
+│
+├── configs/         # Configuration files
+├── data/            # Dataset preprocessing and loaders
+├── models/          # Hierarchical baseline architecture
+├── rag/             # Retrieval-Augmented extension
+├── training/        # Training and evaluation scripts
+├── utils/           # Metrics and helper functions
+├── requirements.txt
+└── README.md
+```
 ---
 
 ## Architecture
