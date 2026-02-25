@@ -17,6 +17,23 @@ The goal is to improve inference efficiency while maintaining strong recommendat
 
 ---
 
+## Architecture Variants
+
+This repository includes two architecture variants:
+
+### 1. Hierarchical LLM-Based Sequential Recommendation (Baseline)
+- Item metadata encoded using a pre-trained Item LLM
+- Sequence modeling via a Recommendation LLM
+- Direct ranking using a projection head
+- Reformulates recommendation as a ranking task instead of autoregressive generation
+
+### 2. Retrieval-Augmented (RAG) Sequential Recommendation
+- Retrieves top-K relevant items using embedding similarity
+- Augments user sequence representation with retrieved contextual signals
+- Enhances robustness by incorporating retrieved item-level knowledge
+- Designed to improve contextual awareness beyond pure sequence modeling
+---
+
 ## Dataset
 
 - MovieLens-1M (ML-1M)
