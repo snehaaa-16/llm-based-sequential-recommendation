@@ -4,7 +4,7 @@ import faiss
 
 class Retriever:
     def __init__(self, item_embeddings):
-        self.item_embeddings = item_embeddings
+        self.item_embeddings = item_embeddings.cpu()
         self.index = self.build_index()
 
     def build_index(self):
@@ -14,5 +14,6 @@ class Retriever:
         return index
 
     def retrieve(self, query_embedding, k=5):
-        distances, indices = self.index.search(query_embedding.numpy(), k)
+        query_embedding = query_embedding.detach().cpu().numpy()
+        distances, indices = self.index.search(query_embedding, k)
         return indices
