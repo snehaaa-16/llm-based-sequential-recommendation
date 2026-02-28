@@ -10,33 +10,36 @@ class RAGSequentialRec(nn.Module):
         self.retriever = retriever
         self.item_embeddings = item_embeddings
 
-        # Learnable fusion layer
-        self.fusion = nn.Linear(hidden_dim * 2, hidden_dim)
+        # Gated fusion mechanism
+        self.gate_layer = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, sequence_embeddings):
 
         # Baseline user representation
         user_rep = self.base_model.rec_llm(sequence_embeddings)
 
-        # Retrieve top-K items
+        # Retrieve similar items
         indices = self.retriever.retrieve(user_rep)
 
         retrieved_embeds = []
         for batch_idx in range(indices.shape[0]):
             items = indices[batch_idx]
             emb = self.item_embeddings[items]
-            emb = emb.mean(dim=0)  # aggregate retrieved items
+            emb = emb.mean(dim=0)
             retrieved_embeds.append(emb)
 
         retrieved_embeds = torch.stack(retrieved_embeds)
 
-        # Concatenate user representation + retrieved representation
-        fused_input = torch.cat([user_rep, retrieved_embeds], dim=1)
+        # Concatenate
+        concat = torch.cat([user_rep, retrieved_embeds], dim=1)
 
-        # Learnable fusion
-        fused_rep = self.fusion(fused_input)
+        # Compute gating values
+        gate = self.sigmoid(self.gate_layer(concat))
 
-        # Final ranking
+        # Gated fusion
+        fused_rep = gate * user_rep + (1 - gate) * retrieved_embeds
+
         logits = self.base_model.projection_head(fused_rep)
 
         return logits
