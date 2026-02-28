@@ -4,29 +4,26 @@ from models.item_llm import ItemLLM
 from data.preprocess import load_ml1m
 
 
-def build_item_embeddings(data_path="data/ml-1m", save_path="data/item_embeddings.pt"):
+def build_item_embeddings(data_path="data/ml-1m",
+                          save_path="data/item_embeddings.pt"):
 
-    # If already computed, load from disk
     if os.path.exists(save_path):
-        print("Loading precomputed item embeddings...")
+        print("Loading cached item embeddings...")
         return torch.load(save_path)
 
-    print("Building item embeddings from scratch...")
+    print("Building item embeddings...")
 
-    ratings, movies = load_ml1m(data_path)
+    _, movies = load_ml1m(data_path)
 
     model = ItemLLM()
     model.eval()
 
     movie_texts = (movies["title"] + " " + movies["genres"]).tolist()
-    movie_ids = movies["movie_id"].tolist()
 
     with torch.no_grad():
-        embeddings = model(movie_texts)
+        embeddings = model(movie_texts).cpu()
 
-    item_embedding_tensor = embeddings.cpu()
-    torch.save(item_embedding_tensor, save_path)
+    torch.save(embeddings, save_path)
+    print("Saved item embeddings.")
 
-    print("Item embeddings saved.")
-
-    return item_embedding_tensor
+    return embeddings
