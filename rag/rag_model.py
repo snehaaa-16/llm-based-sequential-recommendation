@@ -8,55 +8,64 @@ class RAGSequentialRec(nn.Module):
 
         self.base_model = base_model
         self.retriever = retriever
-        self.item_embeddings = item_embeddings
         self.hidden_dim = hidden_dim
 
+        # Register item embeddings as buffer (not trainable)
+        self.register_buffer("item_embeddings", item_embeddings)
+
+        # Gated fusion
         self.gate_layer = nn.Linear(hidden_dim * 2, hidden_dim)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, sequence_ids):
 
-        device = next(self.parameters()).device
-        batch_size, seq_len = sequence_ids.shape
+        device = sequence_ids.device
 
-        # Convert item IDs → embeddings
-        sequence_embeddings = []
+        # ---------------------------------------
+        # 1️⃣ Convert item IDs → embeddings (vectorized)
+        # ---------------------------------------
 
-        for i in range(batch_size):
-            seq_embeds = []
-            for item_id in sequence_ids[i]:
-                item_id = item_id.item()
+        # Padding assumed as 0
+        # Movie IDs assumed starting from 1
+        seq_ids = sequence_ids.clone()
+        mask = seq_ids == 0
+        seq_ids = seq_ids - 1
+        seq_ids[mask] = 0  # avoid negative index
 
-                if item_id == 0:
-                    seq_embeds.append(torch.zeros(self.hidden_dim))
-                else:
-                    seq_embeds.append(self.item_embeddings[item_id - 1])
+        sequence_embeddings = self.item_embeddings[seq_ids]
+        sequence_embeddings[mask] = 0.0
 
-            seq_embeds = torch.stack(seq_embeds)
-            sequence_embeddings.append(seq_embeds)
+        # ---------------------------------------
+        # 2️⃣ Baseline user representation
+        # ---------------------------------------
 
-        sequence_embeddings = torch.stack(sequence_embeddings).to(device)
-
-        # Baseline user representation
         user_rep = self.base_model.rec_llm(sequence_embeddings)
 
-        # Retrieve similar items
+        # ---------------------------------------
+        # 3️⃣ Retrieval
+        # ---------------------------------------
+
         indices = self.retriever.retrieve(user_rep)
+        indices = indices.to(device)
 
-        retrieved_embeds = []
+        # Vectorized retrieval embedding lookup
+        retrieved_embeds = self.item_embeddings[indices]  # (B, K, D)
 
-        for batch_idx in range(indices.shape[0]):
-            items = indices[batch_idx]
-            emb = self.item_embeddings[items]
-            emb = emb.mean(dim=0)
-            retrieved_embeds.append(emb)
+        # Aggregate retrieved embeddings (mean over K)
+        retrieved_embeds = retrieved_embeds.mean(dim=1)
 
-        retrieved_embeds = torch.stack(retrieved_embeds).to(device)
+        # ---------------------------------------
+        # 4️⃣ Gated Fusion
+        # ---------------------------------------
 
-        # Gated fusion
         concat = torch.cat([user_rep, retrieved_embeds], dim=1)
         gate = self.sigmoid(self.gate_layer(concat))
+
         fused_rep = gate * user_rep + (1 - gate) * retrieved_embeds
+
+        # ---------------------------------------
+        # 5️⃣ Final Ranking
+        # ---------------------------------------
 
         logits = self.base_model.projection_head(fused_rep)
 
