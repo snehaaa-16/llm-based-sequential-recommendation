@@ -1,0 +1,26 @@
+training:
+  batch_size: 8
+  epochs: 5
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+model:
+  hidden_dim: 512
+  max_seq_len: 20
+  top_k: 10
+
+retrieval:
+  top_k: 5
+
+dataset:
+  name: "MovieLens-1M"
+  data_path: "data/ml-1m"
+  leave_one_out: true
+
+logging:
+  save_checkpoint: true
+  checkpoint_path: "checkpoints/"
+  log_interval: 1
+
+device:
+  use_cuda: true
