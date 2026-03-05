@@ -1,26 +1,48 @@
+seed: 42
+
 training:
   batch_size: 8
   epochs: 5
   learning_rate: 0.001
   weight_decay: 0.0001
+  num_workers: 2
 
 model:
   hidden_dim: 512
   max_seq_len: 20
-  top_k: 10
+  dropout: 0.1
+
+item_llm:
+  model_name: "t5-small"
+  max_length: 64
+  freeze_encoder: true
+  embedding_cache: "data/item_embeddings.pt"
 
 retrieval:
   top_k: 5
+  similarity: "l2"   # options: l2, cosine
+
+rag:
+  fusion: "gated"    # options: mean, gated
+  temperature: 1.0
 
 dataset:
   name: "MovieLens-1M"
   data_path: "data/ml-1m"
   leave_one_out: true
 
+evaluation:
+  metrics:
+    - recall@10
+    - recall@20
+    - ndcg@10
+    - ndcg@20
+
 logging:
+  log_interval: 1
   save_checkpoint: true
   checkpoint_path: "checkpoints/"
-  log_interval: 1
+  experiment_name: "llm_seq_rec"
 
 device:
   use_cuda: true
