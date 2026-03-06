@@ -38,6 +38,24 @@ def evaluate_model(model, dataloader, device="cpu", k=10):
     print(f"NDCG@{k}: {avg_ndcg:.4f}")
 
     return avg_recall, avg_ndcg
+
+
+def measure_inference_time(model, dataloader, device="cpu"):
+    """
+    Measures total inference time
+    """
+
+    model.eval()
+
+    start = time.time()
+
+    with torch.no_grad():
+        for sequences, _ in dataloader:
+            sequences = sequences.to(device)
+            model(sequences)
+
+    end = time.time()
+
     total_time = end - start
     print(f"Inference Time: {total_time:.4f} seconds")
 
