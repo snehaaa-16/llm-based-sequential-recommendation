@@ -1,42 +1,49 @@
 import torch
-import torch.nn as nn
+import faiss
+import torch.nn.functional as F
 
 
-class RAGSequentialRec(nn.Module):
-    def __init__(self, base_model, retriever, item_embeddings, hidden_dim=512):
-        super().__init__()
+class Retriever:
+    def __init__(self, item_embeddings, top_k=5, similarity="l2"):
+        """
+        item_embeddings: tensor (num_items, hidden_dim)
+        """
+        self.top_k = top_k
+        self.similarity = similarity
 
-        self.base_model = base_model
-        self.retriever = retriever
-        self.item_embeddings = item_embeddings
+        # Ensure embeddings are on CPU for FAISS
+        self.item_embeddings = item_embeddings.detach().cpu()
 
-        # Learnable fusion layer
-        self.fusion = nn.Linear(hidden_dim * 2, hidden_dim)
+        # Optional normalization for cosine similarity
+        if similarity == "cosine":
+            self.item_embeddings = F.normalize(self.item_embeddings, dim=1)
 
-    def forward(self, sequence_embeddings):
+        self.index = self._build_index()
 
-        # Baseline user representation
-        user_rep = self.base_model.rec_llm(sequence_embeddings)
+    def _build_index(self):
+        dim = self.item_embeddings.shape[1]
 
-        # Retrieve top-K items
-        indices = self.retriever.retrieve(user_rep)
+        if self.similarity == "cosine":
+            index = faiss.IndexFlatIP(dim)  # inner product
+        else:
+            index = faiss.IndexFlatL2(dim)
 
-        retrieved_embeds = []
-        for batch_idx in range(indices.shape[0]):
-            items = indices[batch_idx]
-            emb = self.item_embeddings[items]
-            emb = emb.mean(dim=0)  # aggregate retrieved items
-            retrieved_embeds.append(emb)
+        index.add(self.item_embeddings.numpy())
+        return index
 
-        retrieved_embeds = torch.stack(retrieved_embeds)
+    def retrieve(self, query_embeddings):
+        """
+        query_embeddings: (B, hidden_dim)
+        returns: indices (B, top_k)
+        """
 
-        # Concatenate user representation + retrieved representation
-        fused_input = torch.cat([user_rep, retrieved_embeds], dim=1)
+        queries = query_embeddings.detach().cpu()
 
-        # Learnable fusion
-        fused_rep = self.fusion(fused_input)
+        if self.similarity == "cosine":
+            queries = F.normalize(queries, dim=1)
 
-        # Final ranking
-        logits = self.base_model.projection_head(fused_rep)
+        queries = queries.numpy()
 
-        return logits
+        _, indices = self.index.search(queries, self.top_k)
+
+        return torch.tensor(indices, dtype=torch.long)
