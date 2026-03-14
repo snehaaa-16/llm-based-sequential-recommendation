@@ -6,13 +6,19 @@ from .projection_head import ProjectionHead
 
 
 class HierarchicalLLMRec(nn.Module):
-    def __init__(self, item_embeddings, hidden_dim=512):
+    def __init__(
+        self,
+        item_embeddings,
+        hidden_dim=512,
+        dropout=0.1
+    ):
         super().__init__()
 
-        self.hidden_dim = hidden_dim
-
-        # Register item embeddings as non-trainable buffer
+        # Register item embeddings as buffer (not trainable)
         self.register_buffer("item_embeddings", item_embeddings)
+
+        self.hidden_dim = hidden_dim
+        self.embedding_dropout = nn.Dropout(dropout)
 
         # Sequence model
         self.rec_llm = RecommendationLLM(hidden_dim)
@@ -26,28 +32,25 @@ class HierarchicalLLMRec(nn.Module):
         padding_mask: (B, L) optional
         """
 
-        device = sequence_ids.device
+        # Convert MovieLens IDs (1..N) → embedding indices (0..N-1)
+        seq_ids = sequence_ids - 1
 
-        # Convert item IDs → embedding indices
-        seq_ids = sequence_ids.clone()
+        # Clamp negatives caused by padding (0 -> -1)
+        seq_ids = seq_ids.clamp(min=0)
 
-        mask = seq_ids == 0
-        seq_ids = seq_ids - 1
-        seq_ids[mask] = 0
-
-        # Vectorized embedding lookup
+        # Efficient embedding lookup
         sequence_embeddings = self.item_embeddings[seq_ids]
 
-        # Zero-out padding tokens
-        sequence_embeddings[mask] = 0.0
+        # Apply embedding dropout (regularization)
+        sequence_embeddings = self.embedding_dropout(sequence_embeddings)
 
-        # Transformer sequence modeling
+        # Sequence modeling
         user_representation = self.rec_llm(
             sequence_embeddings,
             padding_mask
         )
 
-        # Final ranking
+        # Ranking scores
         logits = self.projection_head(user_representation)
 
         return logits
