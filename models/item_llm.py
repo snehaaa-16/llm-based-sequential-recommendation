@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 
 
@@ -14,7 +15,7 @@ class ItemLLM(nn.Module):
     ):
         super().__init__()
 
-        self.device = device if device else torch.device(
+        self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
 
@@ -31,41 +32,39 @@ class ItemLLM(nn.Module):
             self.projection = nn.Linear(hidden_dim, output_dim)
             self.output_dim = output_dim
         else:
-            self.projection = None
+            self.projection = nn.Identity()
             self.output_dim = hidden_dim
 
-        # Freeze encoder if required
+        # Freeze encoder if needed
         if freeze_encoder:
             for param in self.encoder.parameters():
                 param.requires_grad = False
 
         self.encoder.to(self.device)
 
-    def masked_mean_pooling(self, hidden_states, attention_mask):
+    def masked_mean_pool(self, hidden_states, attention_mask):
         """
+        Efficient masked mean pooling
         hidden_states: (B, L, D)
         attention_mask: (B, L)
         """
-        mask = attention_mask.unsqueeze(-1)
-        masked_embeddings = hidden_states * mask
-        summed = masked_embeddings.sum(dim=1)
+
+        mask = attention_mask.unsqueeze(-1).to(hidden_states.dtype)
+        summed = (hidden_states * mask).sum(dim=1)
         counts = mask.sum(dim=1).clamp(min=1e-9)
+
         return summed / counts
 
     def forward(self, texts, batch_size=32):
-        """
-        texts: list[str]
-        Returns: (num_items, embedding_dim)
-        """
 
-        all_embeddings = []
+        embeddings = []
 
-        for i in range(0, len(texts), batch_size):
+        for start in range(0, len(texts), batch_size):
 
-            batch_texts = texts[i : i + batch_size]
+            batch = texts[start:start + batch_size]
 
             inputs = self.tokenizer(
-                batch_texts,
+                batch,
                 padding=True,
                 truncation=True,
                 max_length=self.max_length,
@@ -75,21 +74,19 @@ class ItemLLM(nn.Module):
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
             with torch.no_grad():
-
-                # Automatic mixed precision if GPU
-                with torch.cuda.amp.autocast(enabled=self.device.type == "cuda"):
+                with torch.autocast(
+                    device_type=self.device.type,
+                    enabled=self.device.type == "cuda"
+                ):
                     outputs = self.encoder(**inputs)
 
-            hidden_states = outputs.last_hidden_state
-
-            pooled = self.masked_mean_pooling(
-                hidden_states,
+            pooled = self.masked_mean_pool(
+                outputs.last_hidden_state,
                 inputs["attention_mask"]
             )
 
-            if self.projection is not None:
-                pooled = self.projection(pooled)
+            pooled = self.projection(pooled)
 
-            all_embeddings.append(pooled.detach().cpu())
+            embeddings.append(pooled.cpu())
 
-        return torch.cat(all_embeddings, dim=0)
+        return torch.cat(embeddings, dim=0)
