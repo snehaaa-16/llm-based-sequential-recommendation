@@ -3,39 +3,56 @@ import torch
 
 def recall_at_k(logits, targets, k=10):
     """
-    Computes Recall@K
-    logits: (B, num_items)
-    targets: (B,)
+    Recall@K (batch-wise)
     """
 
+    k = min(k, logits.size(1))
+
     top_k = torch.topk(logits, k=k, dim=1).indices  # (B, K)
+    targets = targets.view(-1, 1)
 
-    targets = targets.view(-1, 1)  # (B, 1)
-
-    hits = (top_k == targets).any(dim=1).float()  # (B,)
+    hits = (top_k == targets).any(dim=1).float()
 
     return hits.mean()
 
 
 def ndcg_at_k(logits, targets, k=10):
     """
-    Computes NDCG@K
-    logits: (B, num_items)
-    targets: (B,)
+    Proper NDCG@K implementation (batch-wise)
     """
 
-    top_k = torch.topk(logits, k=k, dim=1).indices  # (B, K)
+    k = min(k, logits.size(1))
 
+    top_k = torch.topk(logits, k=k, dim=1).indices  # (B, K)
     targets = targets.view(-1, 1)
 
-    hits = (top_k == targets).nonzero(as_tuple=False)
+    # Compare with target → (B, K)
+    hits = (top_k == targets).float()
 
-    if hits.size(0) == 0:
-        return torch.tensor(0.0, device=logits.device)
+    # Create rank positions: 1, 2, ..., K
+    device = logits.device
+    ranks = torch.arange(1, k + 1, device=device).float()
 
-    # hits[:, 1] gives rank positions (0-indexed)
-    ranks = hits[:, 1] + 1  # convert to 1-indexed
+    # Compute DCG
+    dcg = (hits / torch.log2(ranks + 1)).sum(dim=1)
 
-    ndcg = (1.0 / torch.log2(ranks.float() + 1)).mean()
+    # IDCG = 1 / log2(1 + 1) = 1
+    idcg = torch.ones_like(dcg)
 
-    return ndcg
+    ndcg = dcg / idcg
+
+    return ndcg.mean()
+
+
+def compute_metrics(logits, targets, ks=[10, 20]):
+    """
+    Compute multiple metrics at once
+    """
+
+    results = {}
+
+    for k in ks:
+        results[f"recall@{k}"] = recall_at_k(logits, targets, k).item()
+        results[f"ndcg@{k}"] = ndcg_at_k(logits, targets, k).item()
+
+    return results
