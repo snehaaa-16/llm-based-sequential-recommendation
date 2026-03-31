@@ -1,43 +1,50 @@
 import time
 import torch
 
-from utils.metrics import recall_at_k, ndcg_at_k
+from utils.metrics import compute_metrics
 
 
-def evaluate_model(model, dataloader, device="cpu", k=10):
+def evaluate_model(model, dataloader, device="cpu", ks=[10, 20]):
     """
-    Evaluates model using Recall@K and NDCG@K
+    Evaluate model using Recall@K and NDCG@K
     """
 
     model.eval()
 
-    total_recall = 0
-    total_ndcg = 0
+    total_metrics = {f"recall@{k}": 0 for k in ks}
+    total_metrics.update({f"ndcg@{k}": 0 for k in ks})
+
     num_batches = 0
 
     with torch.no_grad():
-        for sequences, targets in dataloader:
+        for sequences, targets, padding_mask in dataloader:
 
             sequences = sequences.to(device)
             targets = targets.to(device)
+            padding_mask = padding_mask.to(device)
 
-            logits = model(sequences)
+            logits = model(sequences, padding_mask)
 
             # MovieLens IDs start from 1
             targets = targets - 1
 
-            total_recall += recall_at_k(logits, targets, k).item()
-            total_ndcg += ndcg_at_k(logits, targets, k).item()
+            metrics = compute_metrics(logits, targets, ks)
+
+            for key in metrics:
+                total_metrics[key] += metrics[key]
 
             num_batches += 1
 
-    avg_recall = total_recall / num_batches
-    avg_ndcg = total_ndcg / num_batches
+    # Average metrics
+    for key in total_metrics:
+        total_metrics[key] /= num_batches
 
-    print(f"Recall@{k}: {avg_recall:.4f}")
-    print(f"NDCG@{k}: {avg_ndcg:.4f}")
+    # Print results
+    print("Evaluation Results:")
+    for key, value in total_metrics.items():
+        print(f"{key}: {value:.4f}")
 
-    return avg_recall, avg_ndcg
+    return total_metrics
 
 
 def measure_inference_time(model, dataloader, device="cpu"):
@@ -50,13 +57,14 @@ def measure_inference_time(model, dataloader, device="cpu"):
     start = time.time()
 
     with torch.no_grad():
-        for sequences, _ in dataloader:
+        for sequences, _, padding_mask in dataloader:
             sequences = sequences.to(device)
-            model(sequences)
+            padding_mask = padding_mask.to(device)
 
-    end = time.time()
+            model(sequences, padding_mask)
 
-    total_time = end - start
+    total_time = time.time() - start
+
     print(f"Inference Time: {total_time:.4f} seconds")
 
     return total_time
