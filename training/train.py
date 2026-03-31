@@ -7,98 +7,116 @@ from data.dataset import SequentialDataset
 from data.item_embedding_builder import build_item_embeddings
 
 from models.hierarchical_model import HierarchicalLLMRec
-from utils.metrics import recall_at_k, ndcg_at_k
-from utils.config import get_device, DEFAULT_CONFIG
+
+from training.evaluate import evaluate_model, measure_inference_time
+
+from utils.config import load_config, get_device, set_seed
 
 
 def train():
 
-    config = DEFAULT_CONFIG
-    device = get_device()
+    # -----------------------
+    # Config + Setup
+    # -----------------------
+    config = load_config()
+    set_seed(config["seed"])
+
+    device = get_device(config)
     print(f"Using device: {device}")
 
-    # ---------------------------
-    # Load Dataset
-    # ---------------------------
-    ratings, movies = load_ml1m()
+    # -----------------------
+    # Dataset
+    # -----------------------
+    ratings, _ = load_ml1m(config["dataset"]["data_path"])
     user_sequences = create_user_sequences(ratings)
 
-    dataset = SequentialDataset(user_sequences)
+    dataset = SequentialDataset(
+        user_sequences,
+        max_seq_len=config["model"]["max_seq_len"]
+    )
+
     dataloader = DataLoader(
         dataset,
         batch_size=config["training"]["batch_size"],
-        shuffle=True
+        shuffle=True,
+        num_workers=config["training"]["num_workers"]
     )
 
-    # ---------------------------
-    # Build Item Embeddings
-    # ---------------------------
+    # -----------------------
+    # Item Embeddings
+    # -----------------------
     item_embeddings = build_item_embeddings()
-    hidden_dim = item_embeddings.shape[1]
-    num_items = item_embeddings.shape[0]
+    item_embeddings = item_embeddings.to(device)
 
-    # ---------------------------
-    # Build Model
-    # ---------------------------
-    model = HierarchicalLLMRec(num_items, hidden_dim)
-    model = model.to(device)
+    # -----------------------
+    # Model
+    # -----------------------
+    model = HierarchicalLLMRec(
+        item_embeddings,
+        hidden_dim=config["model"]["hidden_dim"],
+        dropout=config["model"]["dropout"]
+    ).to(device)
 
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=config["training"]["learning_rate"]
+        lr=config["training"]["learning_rate"],
+        weight_decay=config["training"]["weight_decay"]
     )
 
     criterion = nn.CrossEntropyLoss()
 
-    # ---------------------------
+    # -----------------------
     # Training Loop
-    # ---------------------------
-    model.train()
-
+    # -----------------------
     for epoch in range(config["training"]["epochs"]):
 
+        model.train()
+
         total_loss = 0
-        total_recall = 0
-        total_ndcg = 0
         num_batches = 0
 
-        for sequences, targets in dataloader:
+        for sequences, targets, padding_mask in dataloader:
 
             sequences = sequences.to(device)
             targets = targets.to(device)
+            padding_mask = padding_mask.to(device)
 
-            logits = model(sequences)
+            logits = model(sequences, padding_mask)
 
-            # MovieLens IDs start at 1 → shift
-            targets_adjusted = targets - 1
+            # MovieLens IDs start from 1
+            targets = targets - 1
 
-            loss = criterion(logits, targets_adjusted)
+            loss = criterion(logits, targets)
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
-
-            # Metrics
-            total_recall += recall_at_k(
-                logits, targets_adjusted,
-                k=config["model"]["top_k"]
-            ).item()
-
-            total_ndcg += ndcg_at_k(
-                logits, targets_adjusted,
-                k=config["model"]["top_k"]
-            ).item()
-
             num_batches += 1
 
-        print(
-            f"Epoch {epoch+1} | "
-            f"Loss: {total_loss:.4f} | "
-            f"Recall@{config['model']['top_k']}: {total_recall/num_batches:.4f} | "
-            f"NDCG@{config['model']['top_k']}: {total_ndcg/num_batches:.4f}"
+        avg_loss = total_loss / num_batches
+
+        # -----------------------
+        # Evaluation
+        # -----------------------
+        metrics = evaluate_model(
+            model,
+            dataloader,
+            device,
+            ks=[10, 20]
         )
+
+        print(
+            f"Epoch {epoch+1}/{config['training']['epochs']} | "
+            f"Loss: {avg_loss:.4f} | "
+            + " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
+        )
+
+    # -----------------------
+    # Inference Timing
+    # -----------------------
+    measure_inference_time(model, dataloader, device)
 
 
 if __name__ == "__main__":
