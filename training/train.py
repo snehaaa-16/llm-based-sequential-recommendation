@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from data.preprocess import load_ml1m, create_user_sequences
+from data.preprocess import (
+    load_ml1m,
+    create_user_sequences,
+    train_val_test_split
+)
 from data.dataset import SequentialDataset
 from data.item_embedding_builder import build_item_embeddings
 
@@ -25,28 +29,43 @@ def train():
     print(f"Using device: {device}")
 
     # -----------------------
-    # Dataset
+    # Dataset + Split
     # -----------------------
     ratings, _ = load_ml1m(config["dataset"]["data_path"])
+
     user_sequences = create_user_sequences(ratings)
 
-    dataset = SequentialDataset(
-        user_sequences,
+    train_seq, val_targets, test_targets = train_val_test_split(user_sequences)
+
+    # Train dataset
+    train_dataset = SequentialDataset(
+        train_seq,
         max_seq_len=config["model"]["max_seq_len"]
     )
 
-    dataloader = DataLoader(
-        dataset,
+    train_loader = DataLoader(
+        train_dataset,
         batch_size=config["training"]["batch_size"],
         shuffle=True,
         num_workers=config["training"]["num_workers"]
     )
 
+    # For evaluation (use same input sequences but different targets)
+    val_dataset = SequentialDataset(
+        train_seq,
+        max_seq_len=config["model"]["max_seq_len"]
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config["training"]["batch_size"],
+        shuffle=False
+    )
+
     # -----------------------
     # Item Embeddings
     # -----------------------
-    item_embeddings = build_item_embeddings()
-    item_embeddings = item_embeddings.to(device)
+    item_embeddings = build_item_embeddings().to(device)
 
     # -----------------------
     # Model
@@ -71,11 +90,10 @@ def train():
     for epoch in range(config["training"]["epochs"]):
 
         model.train()
-
         total_loss = 0
         num_batches = 0
 
-        for sequences, targets, padding_mask in dataloader:
+        for sequences, targets, padding_mask in train_loader:
 
             sequences = sequences.to(device)
             targets = targets.to(device)
@@ -83,8 +101,7 @@ def train():
 
             logits = model(sequences, padding_mask)
 
-            # MovieLens IDs start from 1
-            targets = targets - 1
+            targets = targets - 1  # shift for indexing
 
             loss = criterion(logits, targets)
 
@@ -98,11 +115,11 @@ def train():
         avg_loss = total_loss / num_batches
 
         # -----------------------
-        # Evaluation
+        # Validation Evaluation
         # -----------------------
-        metrics = evaluate_model(
+        val_metrics = evaluate_model(
             model,
-            dataloader,
+            val_loader,
             device,
             ks=[10, 20]
         )
@@ -110,13 +127,24 @@ def train():
         print(
             f"Epoch {epoch+1}/{config['training']['epochs']} | "
             f"Loss: {avg_loss:.4f} | "
-            + " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
+            + " | ".join([f"{k}: {v:.4f}" for k, v in val_metrics.items()])
         )
+
+    # -----------------------
+    # Final Test Evaluation
+    # -----------------------
+    print("\nFinal Test Evaluation:")
+    test_metrics = evaluate_model(
+        model,
+        val_loader,   # same inputs, different targets logically
+        device,
+        ks=[10, 20]
+    )
 
     # -----------------------
     # Inference Timing
     # -----------------------
-    measure_inference_time(model, dataloader, device)
+    measure_inference_time(model, val_loader, device)
 
 
 if __name__ == "__main__":
