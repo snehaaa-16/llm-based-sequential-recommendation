@@ -11,7 +11,8 @@ class ItemLLM(nn.Module):
         max_length=64,
         freeze_encoder=True,
         device=None,
-        output_dim=None
+        output_dim=None,
+        normalize=True
     ):
         super().__init__()
 
@@ -20,14 +21,18 @@ class ItemLLM(nn.Module):
         )
 
         self.max_length = max_length
+        self.normalize = normalize
 
         # Load tokenizer + encoder
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            use_fast=True
+        )
         self.encoder = AutoModel.from_pretrained(model_name)
 
         hidden_dim = self.encoder.config.hidden_size
 
-        # Optional projection layer
+        # Optional projection
         if output_dim and output_dim != hidden_dim:
             self.projection = nn.Linear(hidden_dim, output_dim)
             self.output_dim = output_dim
@@ -41,30 +46,32 @@ class ItemLLM(nn.Module):
                 param.requires_grad = False
 
         self.encoder.to(self.device)
+        self.encoder.eval()
 
+    # -----------------------
+    # Masked Mean Pooling
+    # -----------------------
     def masked_mean_pool(self, hidden_states, attention_mask):
-        """
-        Efficient masked mean pooling
-        hidden_states: (B, L, D)
-        attention_mask: (B, L)
-        """
 
-        mask = attention_mask.unsqueeze(-1).to(hidden_states.dtype)
+        mask = attention_mask.unsqueeze(-1).type_as(hidden_states)
         summed = (hidden_states * mask).sum(dim=1)
         counts = mask.sum(dim=1).clamp(min=1e-9)
 
         return summed / counts
 
+    # -----------------------
+    # Forward
+    # -----------------------
     def forward(self, texts, batch_size=32):
 
-        embeddings = []
+        all_embeddings = []
 
         for start in range(0, len(texts), batch_size):
 
-            batch = texts[start:start + batch_size]
+            batch_texts = texts[start:start + batch_size]
 
             inputs = self.tokenizer(
-                batch,
+                batch_texts,
                 padding=True,
                 truncation=True,
                 max_length=self.max_length,
@@ -76,17 +83,23 @@ class ItemLLM(nn.Module):
             with torch.no_grad():
                 with torch.autocast(
                     device_type=self.device.type,
-                    enabled=self.device.type == "cuda"
+                    enabled=(self.device.type == "cuda")
                 ):
                     outputs = self.encoder(**inputs)
 
+            hidden_states = outputs.last_hidden_state
+
             pooled = self.masked_mean_pool(
-                outputs.last_hidden_state,
+                hidden_states,
                 inputs["attention_mask"]
             )
 
             pooled = self.projection(pooled)
 
-            embeddings.append(pooled.cpu())
+            # Optional normalization (important for retrieval similarity)
+            if self.normalize:
+                pooled = F.normalize(pooled, dim=1)
 
-        return torch.cat(embeddings, dim=0)
+            all_embeddings.append(pooled.detach().cpu())
+
+        return torch.cat(all_embeddings, dim=0)
