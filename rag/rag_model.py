@@ -27,14 +27,17 @@ class RAGSequentialRec(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(hidden_dim)
 
-        # Attention fusion for retrieved items
+        # Attention fusion
         if retrieval_fusion == "attention":
             self.retrieval_attention = nn.Linear(hidden_dim, 1)
 
+    # -----------------------
+    # Retrieval aggregation
+    # -----------------------
     def aggregate_retrieval(self, retrieved_embeds):
-        """
-        retrieved_embeds: (B, K, D)
-        """
+
+        # Normalize embeddings (important for similarity)
+        retrieved_embeds = F.normalize(retrieved_embeds, dim=-1)
 
         if self.retrieval_fusion == "mean":
             return retrieved_embeds.mean(dim=1)
@@ -46,32 +49,57 @@ class RAGSequentialRec(nn.Module):
 
         raise ValueError("Invalid retrieval fusion strategy")
 
+    # -----------------------
+    # Forward
+    # -----------------------
     def forward(self, sequence_ids):
 
-        # Convert MovieLens IDs (1..N) → embedding indices (0..N-1)
-        seq_ids = (sequence_ids - 1).clamp(min=0)
+        device = sequence_ids.device
 
+        # -----------------------
+        # Convert IDs → indices
+        # -----------------------
+        seq_ids = (sequence_ids - 1).clamp(min=0)
         padding_mask = sequence_ids == 0
 
-        # Efficient embedding lookup
+        # -----------------------
+        # Embedding lookup
+        # -----------------------
         sequence_embeddings = self.item_embeddings[seq_ids]
 
-        # Base sequence encoder
+        # FIX: zero-out padding embeddings
+        sequence_embeddings = sequence_embeddings.masked_fill(
+            padding_mask.unsqueeze(-1),
+            0.0
+        )
+
+        # -----------------------
+        # Base user representation
+        # -----------------------
         user_rep = self.base_model.rec_llm(
             sequence_embeddings,
             padding_mask
         )
 
-        # Retrieve similar items
+        # Normalize for retrieval
+        user_rep = F.normalize(user_rep, dim=1)
+
+        # -----------------------
+        # Retrieval
+        # -----------------------
         retrieved_indices = self.retriever.retrieve(user_rep)
-        retrieved_indices = retrieved_indices.to(sequence_ids.device)
+        retrieved_indices = retrieved_indices.to(device)
 
         retrieved_embeds = self.item_embeddings[retrieved_indices]
 
+        # -----------------------
         # Aggregate retrieved items
+        # -----------------------
         retrieved_rep = self.aggregate_retrieval(retrieved_embeds)
 
-        # Gated fusion
+        # -----------------------
+        # Fusion
+        # -----------------------
         fusion_input = torch.cat([user_rep, retrieved_rep], dim=-1)
 
         gate = torch.sigmoid(self.fusion_gate(fusion_input))
@@ -80,7 +108,12 @@ class RAGSequentialRec(nn.Module):
 
         fused_rep = self.layer_norm(self.dropout(fused_rep))
 
-        # Final ranking
+        # Normalize before ranking
+        fused_rep = F.normalize(fused_rep, dim=1)
+
+        # -----------------------
+        # Ranking
+        # -----------------------
         logits = self.base_model.projection_head(fused_rep)
 
         return logits
