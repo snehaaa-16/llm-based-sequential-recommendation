@@ -2,79 +2,132 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from data.preprocess import load_ml1m, create_user_sequences
+from data.preprocess import (
+    load_ml1m,
+    create_user_sequences,
+    train_val_test_split
+)
+
 from data.dataset import SequentialDataset
 from data.item_embedding_builder import build_item_embeddings
 
 from models.hierarchical_model import HierarchicalLLMRec
+
 from rag.retriever import Retriever
 from rag.rag_model import RAGSequentialRec
 
-from utils.metrics import recall_at_k, ndcg_at_k
-from utils.config import load_config, get_device
+from training.evaluate import (
+    evaluate_model,
+    measure_inference_time
+)
+
+from utils.config import (
+    load_config,
+    get_device,
+    set_seed
+)
 
 
 def train():
 
+    # -----------------------
+    # Config + Setup
+    # -----------------------
     config = load_config()
+
+    set_seed(config["seed"])
+
     device = get_device(config)
 
     print(f"Using device: {device}")
 
     # -----------------------
-    # Load Dataset
+    # Dataset + Split
     # -----------------------
-    ratings, movies = load_ml1m(config["dataset"]["data_path"])
+    ratings, _ = load_ml1m(
+        config["dataset"]["data_path"]
+    )
+
     user_sequences = create_user_sequences(ratings)
 
-    dataset = SequentialDataset(
-        user_sequences,
+    train_seq, val_targets, test_targets = (
+        train_val_test_split(user_sequences)
+    )
+
+    # -----------------------
+    # Train Dataset
+    # -----------------------
+    train_dataset = SequentialDataset(
+        train_seq,
         max_seq_len=config["model"]["max_seq_len"]
     )
 
-    dataloader = DataLoader(
-        dataset,
+    train_loader = DataLoader(
+        train_dataset,
         batch_size=config["training"]["batch_size"],
         shuffle=True,
         num_workers=config["training"]["num_workers"]
     )
 
-    # -----------------------
-    # Build Item Embeddings
-    # -----------------------
-    item_embeddings = build_item_embeddings()
-    item_embeddings = item_embeddings.to(device)
+    # Validation loader
+    val_dataset = SequentialDataset(
+        train_seq,
+        max_seq_len=config["model"]["max_seq_len"]
+    )
 
-    num_items = item_embeddings.shape[0]
-    hidden_dim = item_embeddings.shape[1]
-
-    # -----------------------
-    # Build Base Model
-    # -----------------------
-    base_model = HierarchicalLLMRec(num_items, hidden_dim)
-    base_model = base_model.to(device)
-
-    # -----------------------
-    # Build Retriever
-    # -----------------------
-    retriever = Retriever(
-        item_embeddings.cpu(),
-        top_k=config["retrieval"]["top_k"],
-        similarity=config["retrieval"]["similarity"]
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config["training"]["batch_size"],
+        shuffle=False
     )
 
     # -----------------------
-    # Build RAG Model
+    # Item Embeddings
+    # -----------------------
+    item_embeddings = build_item_embeddings().to(device)
+
+    hidden_dim = item_embeddings.shape[1]
+
+    # -----------------------
+    # Base Model
+    # -----------------------
+    base_model = HierarchicalLLMRec(
+        item_embeddings=item_embeddings,
+        hidden_dim=config["model"]["hidden_dim"],
+        dropout=config["model"]["dropout"],
+        pooling=config["model"]["pooling"],
+        causal=config["model"].get("causal", False)
+    ).to(device)
+
+    # -----------------------
+    # Retriever
+    # -----------------------
+    retriever = Retriever(
+        item_embeddings=item_embeddings.cpu(),
+        top_k=config["retrieval"]["top_k"],
+        similarity=config["retrieval"]["similarity"],
+        use_gpu=config["retrieval"].get("use_gpu", False),
+        index_type=config["retrieval"].get("index_type", "flat")
+    )
+
+    # -----------------------
+    # RAG Model
     # -----------------------
     model = RAGSequentialRec(
         base_model=base_model,
         retriever=retriever,
         item_embeddings=item_embeddings,
-        hidden_dim=hidden_dim
-    )
+        hidden_dim=hidden_dim,
+        dropout=config["model"]["dropout"],
+        retrieval_fusion=config["retrieval"].get(
+            "fusion",
+            "attention"
+        )
+    ).to(device)
 
-    model = model.to(device)
-
+    # -----------------------
+    # Optimizer + Loss
+    # -----------------------
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config["training"]["learning_rate"],
@@ -84,6 +137,12 @@ def train():
     criterion = nn.CrossEntropyLoss()
 
     # -----------------------
+    # Validation Targets
+    # -----------------------
+    val_targets_list = list(val_targets.values())
+    test_targets_list = list(test_targets.values())
+
+    # -----------------------
     # Training Loop
     # -----------------------
     for epoch in range(config["training"]["epochs"]):
@@ -91,14 +150,13 @@ def train():
         model.train()
 
         total_loss = 0
-        total_recall = 0
-        total_ndcg = 0
         num_batches = 0
 
-        for sequences, targets in dataloader:
+        for sequences, targets, padding_mask in train_loader:
 
             sequences = sequences.to(device)
             targets = targets.to(device)
+            padding_mask = padding_mask.to(device)
 
             logits = model(sequences)
 
@@ -112,32 +170,50 @@ def train():
             optimizer.step()
 
             total_loss += loss.item()
-
-            # Metrics
-            total_recall += recall_at_k(
-                logits,
-                targets,
-                config["model"]["top_k"]
-            ).item()
-
-            total_ndcg += ndcg_at_k(
-                logits,
-                targets,
-                config["model"]["top_k"]
-            ).item()
-
             num_batches += 1
 
         avg_loss = total_loss / num_batches
-        avg_recall = total_recall / num_batches
-        avg_ndcg = total_ndcg / num_batches
+
+        # -----------------------
+        # Validation Evaluation
+        # -----------------------
+        val_metrics = evaluate_model(
+            model,
+            val_loader,
+            device=device,
+            ks=[10, 20],
+            external_targets=val_targets_list
+        )
 
         print(
             f"Epoch {epoch+1}/{config['training']['epochs']} | "
             f"Loss: {avg_loss:.4f} | "
-            f"Recall@{config['model']['top_k']}: {avg_recall:.4f} | "
-            f"NDCG@{config['model']['top_k']}: {avg_ndcg:.4f}"
+            + " | ".join(
+                [f"{k}: {v:.4f}" for k, v in val_metrics.items()]
+            )
         )
+
+    # -----------------------
+    # Final Test Evaluation
+    # -----------------------
+    print("\nFinal Test Evaluation:")
+
+    test_metrics = evaluate_model(
+        model,
+        val_loader,
+        device=device,
+        ks=[10, 20],
+        external_targets=test_targets_list
+    )
+
+    # -----------------------
+    # Inference Timing
+    # -----------------------
+    measure_inference_time(
+        model,
+        val_loader,
+        device
+    )
 
 
 if __name__ == "__main__":
